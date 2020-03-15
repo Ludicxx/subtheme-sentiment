@@ -10,7 +10,7 @@ with open('tokenizer.json') as f:
     data = json.load(f)
     tokenizer = tokenizer_from_json(data)
 
-with open('finalized_model_55.sav', 'rb') as handle:
+with open('finalized_model.sav', 'rb') as handle:
     model = pickle.load(handle)
 
 def cleanPunctuation(sentence):  # function to clean the word of any punctuation or special characters
