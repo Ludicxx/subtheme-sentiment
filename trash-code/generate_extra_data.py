@@ -12,9 +12,10 @@ from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from keras.callbacks import ReduceLROnPlateau, EarlyStopping, ModelCheckpoint
 from keras.models import Sequential
-from keras.layers import Dense, Embedding, Flatten, Dropout
+from keras.layers import Dense, Embedding, Flatten, Dropout, LSTM, SpatialDropout1D
 from sklearn.metrics import f1_score
 import pickle
+from collections import Counter
 
 data = pd.read_csv("sentisum-evaluation-dataset.csv", header=None)
 
@@ -85,6 +86,7 @@ for j in label_hash_map_test:
     i += 1
 
 
+
 def cleanPunctuation(sentence):  # function to clean the word of any punctuation or special characters
     cleaned = re.sub(r'[?|!|\'|"|#]', r'', sentence)
     cleaned = re.sub(r'[.|,|)|(|\|/]', r' ', cleaned)
@@ -114,10 +116,78 @@ dataRefactor(data_test[0])
 reviews_train = data_train[0]
 reviews_test = data_test[0]
 
+# Data Generation
+def checkLabelIntersection(data1,data2):
+    for i in range(1,data1.shape[0]-1):
+        if data1[i] + data2[i] == 2:
+            return False
+    return True
+
+def joinData(data1,data2):
+    # temp_data1 = data1.copy()
+    # temp_data2 = data2.copy()
+    appendedData = pd.DataFrame(data=data1).append(pd.DataFrame(data=data2))
+    appendedData[0] = appendedData[0] + ' and '
+    generatedData = pd.DataFrame(appendedData.sum(axis =0 )).transpose()
+    generatedData[0] = generatedData[0].str.rstrip(' and ')
+    return(generatedData)
+
+
+def generateData(review, labels):
+
+    data = pd.concat([review,labels], axis=1, ignore_index = True)
+
+
+    label_weight = np.array([0]*(data.shape[1]-1))
+    for i in range(1,data.shape[1]):
+        count_freq = Counter(data[i])
+        label_weight[i-1] = count_freq[1]
+
+    review_weight = np.array([0]*data.shape[0])
+
+    for i in range(1,data.shape[1]):
+        for j in range(data.shape[0]):
+            review_weight[j] += data[i][j]*label_weight[i-1]
+
+    data[data.shape[1]] = review_weight
+
+    data = data.sort_values(by = (data.shape[1]-1), ascending=True)
+    data = data.reset_index(drop=True)
+
+    breakingPoint = int(data.shape[0]/2)
+    threshold = 2
+
+    for i in range(breakingPoint):
+        dataF1 = data.loc[[i]]
+        count = 0
+        for j in range(i,data.shape[0]):
+            dataF2 = data.loc[[j]]
+            if checkLabelIntersection(dataF1,dataF2):
+                dataF3 = joinData(dataF1,dataF2)
+                data = data.append(dataF3, ignore_index=True)
+                count+=1
+                if count>=threshold:
+                    break
+    data = data.sort_values(by = (data.shape[1]-1), ascending=True)
+    data = data.reset_index(drop=True)
+    data = data.drop(data.shape[1]-1, axis = 1)
+    labels_gen = data.drop(0, axis = 1)
+    review_gen = data[0]
+    print(data.shape)
+
+    data.to_pickle("./dummy.pkl")
+
+    return review_gen, labels_gen
+
+reviews_train, label_train = generateData(reviews_train, label_train)
+print(reviews_train.shape)
+print(label_train.shape)
+
+
 filter_length = 300
 vocab_size = 10000
-embedding_dim = 16
-max_length = 120
+embedding_dim = 32
+max_length = 500
 trunc_type = 'post'
 oov_tok = "<OOV>"
 
@@ -134,17 +204,14 @@ X_test = pad_sequences(review_sequences_test, maxlen=max_length)
 # Model
 
 model = Sequential()
-model.add(Embedding(vocab_size, 64, input_length=max_length))
-model.add(Flatten())
-model.add(Dropout(0.2))
-model.add(Dense(64, activation='relu'))
-model.add(Dropout(0.2))
-model.add(Dense(64, activation='relu'))
+model.add(Embedding(vocab_size, 32, input_length=max_length))
+model.add(SpatialDropout1D(0.2))
+model.add(LSTM(100,dropout = 0.2,recurrent_dropout = 0.2))
 model.add(Dense(59, activation='sigmoid'))
 
 model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
 
-model.fit(X_train, label_train, epochs=50, batch_size=128, validation_data=(X_test, label_test), verbose=2)
+model.fit(X_train, label_train, epochs=10, batch_size=256, validation_data=(X_test, label_test), verbose=2)
 evaluation_scores = model.evaluate(X_test, label_test, verbose=0)
 
 filename = 'finalized_model.sav'
@@ -155,7 +222,7 @@ predicted_output = model.predict(X_test)
 np.array(predicted_output)
 for idx, i in enumerate(predicted_output):
     for idy, j in enumerate(i):
-        if predicted_output[idx][idy] >= .5:
+        if predicted_output[idx][idy] >= .2:
             # print(reviews_test[idx],end = '-----')
             # print(label_set[idy],end =' ')
             predicted_output[idx][idy] = 1
@@ -178,5 +245,5 @@ predicted_test_output = model.predict(padded_test, batch_size=None, verbose=0, s
 predicted_test_output = predicted_test_output[0]
 print(predicted_test_output)
 for idx,i in enumerate(predicted_test_output):
-    if i >= 0.5:
+    if i >= 0.2:
         print(label_set[idx],end=' ')
